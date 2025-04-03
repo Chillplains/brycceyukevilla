@@ -1,33 +1,44 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Bryce Community Simulator</title>
+  <meta charset="UTF-8" />
+  <title>Bryce World Simulator - Ultimate Sandbox</title>
   <style>
-    body { 
-      margin: 0; 
-      overflow: hidden; 
-      background: #87CEEB; /* Default sunny */
-    }
-    canvas { 
-      display: block; 
-      background: inherit;
-    }
-    #controls {
+    /* Basic Reset */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #333; overflow: hidden; font-family: Arial, sans-serif; }
+    canvas { display: block; background: #87CEEB; }
+    #uiContainer {
       position: absolute;
       top: 10px;
       left: 10px;
-      background: rgba(255,255,255,0.8);
+      background: rgba(255,255,255,0.9);
       padding: 10px;
-      border-radius: 5px;
-      font-family: sans-serif;
+      border-radius: 8px;
+      z-index: 1000;
+      max-width: 400px;
     }
-    button, select { margin: 3px; }
+    #uiContainer button, #uiContainer select {
+      margin: 5px;
+      padding: 5px 10px;
+      font-size: 14px;
+    }
+    #uiContainer label {
+      margin-right: 10px;
+    }
+    #log {
+      margin-top: 10px;
+      max-height: 100px;
+      overflow-y: auto;
+      background: #eee;
+      padding: 5px;
+      font-size: 12px;
+    }
   </style>
 </head>
 <body>
-  <canvas id="simCanvas"></canvas>
-  <div id="controls">
+  <canvas id="worldCanvas"></canvas>
+  <div id="uiContainer">
     <!-- Time Controls -->
     <div>
       <button id="pauseBtn">Pause</button>
@@ -37,9 +48,9 @@
       <button id="slowDownBtn">Slow Down</button>
       <span>Time Multiplier: <span id="timeMultiplierDisplay">1</span></span>
     </div>
-    <!-- Weather Control -->
+    <!-- Weather Controls -->
     <div>
-      Weather: 
+      <label for="weatherSelect">Weather:</label>
       <select id="weatherSelect">
         <option value="sunny">Sunny</option>
         <option value="rain">Rain</option>
@@ -47,101 +58,308 @@
         <option value="dry">Dry</option>
       </select>
     </div>
-    <!-- Community Controls -->
+    <!-- World & Community Controls -->
     <div>
-      <button id="changeRolesBtn">Change Roles</button>
       <button id="buildHouseBtn">Build House</button>
       <button id="throwHouseBtn">Throw House</button>
       <button id="blowUpHouseBtn">Blow Up House</button>
+      <button id="changeRolesBtn">Randomize Roles</button>
+      <button id="spawnAgentBtn">Spawn Bryce Agent</button>
     </div>
+    <!-- Debug/Info Log -->
+    <div id="log">Log Output...</div>
   </div>
-
   <script>
-    const canvas = document.getElementById('simCanvas');
-    const ctx = canvas.getContext('2d');
+    /**********************************************************
+     * Bryce World Simulator - Ultimate Sandbox
+     * Advanced simulation inspired by WorldBox.
+     * 
+     * Features:
+     * - Realistic world grid with day/night cycle.
+     * - Dynamic weather: sunny, rain, cloudy, dry.
+     * - Time controls: pause, rewind, fast forward, speed up, slow down.
+     * - Bryce Agents with roles (Regular, Killer, Fugitive, Police, Builder).
+     * - Agents build houses, walk around, and interact.
+     * - Houses can be thrown or blown up.
+     * - Detailed UI for controlling simulation.
+     **********************************************************/
+
+    // Canvas Setup
+    const canvas = document.getElementById("worldCanvas");
+    const ctx = canvas.getContext("2d");
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
 
-    // Global simulation variables
-    let timeMultiplier = 1; // Can be negative for "rewind"
-    let weather = "sunny";  // Options: sunny, rain, cloudy, dry
-    let isPaused = false;
-    const communityBryces = [];
-    const houses = [];
+    window.addEventListener("resize", () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      world.updateGrid();
+    });
 
-    // CommunityBryce class (stick figure Bryce)
-    class CommunityBryce {
-      constructor(x, y) {
-        this.x = x || Math.random() * canvas.width;
-        this.y = y || Math.random() * canvas.height;
-        this.dx = (Math.random() - 0.5) * 2;
-        this.dy = (Math.random() - 0.5) * 2;
-        // Roles: Regular, Killer, Fugitive, Police
-        this.role = "Regular";
-        this.job = this.role;
-        this.color = "black";
-        this.updateColor();
+    // Global Simulation Variables
+    let timeMultiplier = 1;
+    let isPaused = false;
+    let currentWeather = "sunny";
+    let currentTime = 0; // simulation time in seconds
+    let dayLength = 60; // seconds for a full day cycle
+    const logEl = document.getElementById("log");
+
+    // Utility Logging Function
+    function log(message) {
+      logEl.innerHTML = `[${(currentTime).toFixed(1)}s] ${message}<br>` + logEl.innerHTML;
+    }
+
+    // ------------------------------------------------------------
+    // World Class - Manages grid, agents, buildings, weather, etc.
+    // ------------------------------------------------------------
+    class World {
+      constructor() {
+        this.agents = [];
+        this.buildings = [];
+        this.gridSize = 50; // each cell is 50x50 pixels
+        this.columns = Math.ceil(canvas.width / this.gridSize);
+        this.rows = Math.ceil(canvas.height / this.gridSize);
+        this.dayNightAlpha = 0; // for day/night overlay
       }
-      updateColor() {
-        if (this.role === "Regular") this.color = "black";
-        else if (this.role === "Killer") this.color = "red";
-        else if (this.role === "Fugitive") this.color = "orange";
-        else if (this.role === "Police") this.color = "blue";
+      updateGrid() {
+        this.columns = Math.ceil(canvas.width / this.gridSize);
+        this.rows = Math.ceil(canvas.height / this.gridSize);
       }
-      update() {
-        // Role-based behavior:
-        if (this.role === "Killer") {
-          // Chase nearest Regular or Fugitive
-          let target = null, minDist = Infinity;
-          for (let other of communityBryces) {
-            if (other !== this && (other.role === "Regular" || other.role === "Fugitive")) {
-              let d = Math.hypot(this.x - other.x, this.y - other.y);
-              if (d < minDist) { minDist = d; target = other; }
-            }
-          }
-          if (target) {
-            let angle = Math.atan2(target.y - this.y, target.x - this.x);
-            this.dx = Math.cos(angle) * 1.5;
-            this.dy = Math.sin(angle) * 1.5;
-          }
-        } else if (this.role === "Police") {
-          // Chase nearest Killer
-          let target = null, minDist = Infinity;
-          for (let other of communityBryces) {
-            if (other !== this && other.role === "Killer") {
-              let d = Math.hypot(this.x - other.x, this.y - other.y);
-              if (d < minDist) { minDist = d; target = other; }
-            }
-          }
-          if (target) {
-            let angle = Math.atan2(target.y - this.y, target.x - this.x);
-            this.dx = Math.cos(angle) * 1.2;
-            this.dy = Math.sin(angle) * 1.2;
-          }
-        } else if (this.role === "Fugitive") {
-          // Run away from nearest Killer
-          let threat = null, minDist = Infinity;
-          for (let other of communityBryces) {
-            if (other !== this && other.role === "Killer") {
-              let d = Math.hypot(this.x - other.x, this.y - other.y);
-              if (d < minDist) { minDist = d; threat = other; }
-            }
-          }
-          if (threat) {
-            let angle = Math.atan2(this.y - threat.y, this.x - threat.x);
-            this.dx = Math.cos(angle) * 1.5;
-            this.dy = Math.sin(angle) * 1.5;
+      update(delta) {
+        if (isPaused) return;
+        // Update simulation time
+        currentTime += delta * timeMultiplier;
+        // Update day/night cycle (simple sine wave)
+        let dayProgress = (currentTime % dayLength) / dayLength;
+        this.dayNightAlpha = 0.5 * (1 - Math.cos(dayProgress * Math.PI * 2));
+        // Update Agents
+        for (let agent of this.agents) {
+          agent.update(delta);
+        }
+        // Update Buildings
+        for (let building of this.buildings) {
+          building.update(delta);
+        }
+      }
+      draw() {
+        // Draw grid background (optional)
+        for (let i = 0; i < this.columns; i++) {
+          for (let j = 0; j < this.rows; j++) {
+            ctx.strokeStyle = "#444";
+            ctx.strokeRect(i * this.gridSize, j * this.gridSize, this.gridSize, this.gridSize);
           }
         }
-        // Update position with time multiplier
-        this.x += this.dx * timeMultiplier;
-        this.y += this.dy * timeMultiplier;
-        // Bounce off walls
+        // Draw Buildings
+        for (let building of this.buildings) {
+          building.draw();
+        }
+        // Draw Agents
+        for (let agent of this.agents) {
+          agent.draw();
+        }
+        // Weather Effects
+        Weather.draw();
+        // Day/Night Overlay
+        ctx.fillStyle = `rgba(0, 0, 50, ${this.dayNightAlpha * 0.5})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+
+    // ------------------------------------------------------------
+    // Weather Class - Manages weather effects.
+    // ------------------------------------------------------------
+    class Weather {
+      static draw() {
+        if (currentWeather === "rain") {
+          for (let i = 0; i < 100; i++) {
+            ctx.strokeStyle = "blue";
+            ctx.beginPath();
+            let rx = Math.random() * canvas.width;
+            let ry = Math.random() * canvas.height;
+            ctx.moveTo(rx, ry);
+            ctx.lineTo(rx + 5, ry + 15);
+            ctx.stroke();
+          }
+        } else if (currentWeather === "cloudy") {
+          // Draw simple clouds
+          for (let i = 0; i < 5; i++) {
+            let cx = (i / 5) * canvas.width + Math.random() * 50;
+            let cy = Math.random() * 100;
+            ctx.fillStyle = "rgba(200,200,200,0.7)";
+            ctx.beginPath();
+            ctx.arc(cx, cy, 30, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        } else if (currentWeather === "dry") {
+          // Draw dust particles
+          for (let i = 0; i < 50; i++) {
+            ctx.fillStyle = "rgba(210,180,140,0.5)";
+            ctx.beginPath();
+            ctx.arc(Math.random() * canvas.width, Math.random() * canvas.height, 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+    }
+
+    // ------------------------------------------------------------
+    // Agent Class - Bryce Agents with roles and behaviors.
+    // ------------------------------------------------------------
+    class Agent {
+      constructor(x, y) {
+        this.x = x !== undefined ? x : Math.random() * canvas.width;
+        this.y = y !== undefined ? y : Math.random() * canvas.height;
+        this.dx = (Math.random() - 0.5) * 50;
+        this.dy = (Math.random() - 0.5) * 50;
+        this.role = this.assignRole();
+        this.job = this.role; // by default, job = role
+        this.color = this.getColorByRole();
+        this.size = 10;
+        this.target = null; // for chasing or building tasks
+        this.action = "idle"; // idle, building, chasing, fleeing, patrolling
+        this.constructionProgress = 0;
+      }
+      assignRole() {
+        // Weighted random selection for roles
+        let roles = [
+          { role: "Regular", weight: 50 },
+          { role: "Builder", weight: 20 },
+          { role: "Killer", weight: 10 },
+          { role: "Fugitive", weight: 10 },
+          { role: "Police", weight: 10 }
+        ];
+        let total = roles.reduce((acc, r) => acc + r.weight, 0);
+        let rand = Math.random() * total;
+        for (let r of roles) {
+          if (rand < r.weight) return r.role;
+          rand -= r.weight;
+        }
+        return "Regular";
+      }
+      getColorByRole() {
+        switch (this.role) {
+          case "Regular": return "black";
+          case "Builder": return "green";
+          case "Killer": return "red";
+          case "Fugitive": return "orange";
+          case "Police": return "blue";
+          default: return "gray";
+        }
+      }
+      update(delta) {
+        // Behavior based on role
+        if (this.role === "Builder") {
+          // Builders seek an empty spot (grid cell) to build a house.
+          if (this.action === "idle") {
+            let targetBuilding = world.buildings.find(b => !b.underConstruction);
+            if (!targetBuilding) {
+              // If no building exists, initiate new construction
+              this.action = "building";
+              this.target = new Building(Math.floor(this.x / world.gridSize) * world.gridSize, Math.floor(this.y / world.gridSize) * world.gridSize);
+              world.buildings.push(this.target);
+              log("Builder started a new house construction.");
+            }
+          } else if (this.action === "building" && this.target) {
+            // Move toward target construction site
+            this.moveTo(this.target.x + this.target.width / 2, this.target.y + this.target.height / 2, delta);
+            // Simulate construction progress when in range
+            if (this.inRange(this.target.x + this.target.width / 2, this.target.y + this.target.height / 2, 20)) {
+              this.constructionProgress += delta * 20;
+              this.target.constructionProgress = this.constructionProgress;
+              if (this.constructionProgress >= 100) {
+                this.action = "idle";
+                this.constructionProgress = 0;
+                this.target.underConstruction = false;
+                log("House construction completed.");
+              }
+            }
+          }
+        } else if (this.role === "Killer") {
+          // Killer chases nearest Regular or Fugitive
+          let target = this.findNearestAgent(["Regular", "Fugitive"]);
+          if (target) {
+            this.moveTo(target.x, target.y, delta, 60);
+            if (this.inRange(target.x, target.y, 10)) {
+              // "Kill" the target
+              let index = world.agents.indexOf(target);
+              if (index > -1) {
+                world.agents.splice(index, 1);
+                log("Killer eliminated a target!");
+              }
+            }
+          }
+        } else if (this.role === "Police") {
+          // Police chase nearest Killer
+          let target = this.findNearestAgent(["Killer"]);
+          if (target) {
+            this.moveTo(target.x, target.y, delta, 55);
+            if (this.inRange(target.x, target.y, 10)) {
+              // Arrest the killer (remove from world)
+              let index = world.agents.indexOf(target);
+              if (index > -1) {
+                world.agents.splice(index, 1);
+                log("Police arrested a Killer!");
+              }
+            }
+          }
+        } else if (this.role === "Fugitive") {
+          // Fugitive runs away from nearest Killer
+          let threat = this.findNearestAgent(["Killer"]);
+          if (threat) {
+            this.moveAwayFrom(threat.x, threat.y, delta, 70);
+          } else {
+            // Wander around randomly if no threat
+            this.wander(delta);
+          }
+        } else {
+          // Regular agents wander randomly
+          this.wander(delta);
+        }
+        // Update position with basic physics
+        this.x += this.dx * delta;
+        this.y += this.dy * delta;
+        // Boundary checks
         if (this.x < 0 || this.x > canvas.width) this.dx *= -1;
         if (this.y < 0 || this.y > canvas.height) this.dy *= -1;
       }
+      moveTo(targetX, targetY, delta, speed = 50) {
+        let angle = Math.atan2(targetY - this.y, targetX - this.x);
+        this.dx = Math.cos(angle) * speed;
+        this.dy = Math.sin(angle) * speed;
+      }
+      moveAwayFrom(threatX, threatY, delta, speed = 50) {
+        let angle = Math.atan2(this.y - threatY, this.x - threatX);
+        this.dx = Math.cos(angle) * speed;
+        this.dy = Math.sin(angle) * speed;
+      }
+      wander(delta) {
+        // Random wandering behavior
+        this.dx += (Math.random() - 0.5) * 10 * delta;
+        this.dy += (Math.random() - 0.5) * 10 * delta;
+        // Limit speed
+        let maxSpeed = 50;
+        let speed = Math.hypot(this.dx, this.dy);
+        if (speed > maxSpeed) {
+          this.dx = (this.dx / speed) * maxSpeed;
+          this.dy = (this.dy / speed) * maxSpeed;
+        }
+      }
+      inRange(tx, ty, range) {
+        return Math.hypot(this.x - tx, this.y - ty) < range;
+      }
+      findNearestAgent(roleArray) {
+        let nearest = null;
+        let minDist = Infinity;
+        for (let other of world.agents) {
+          if (other !== this && roleArray.includes(other.role)) {
+            let d = Math.hypot(this.x - other.x, this.y - other.y);
+            if (d < minDist) { minDist = d; nearest = other; }
+          }
+        }
+        return nearest;
+      }
       draw() {
-        // Draw a stick figure
+        // Draw agent as a stick figure with role color
         ctx.strokeStyle = this.color;
         ctx.lineWidth = 2;
         // Head
@@ -165,145 +383,174 @@
         ctx.moveTo(this.x, this.y + 10);
         ctx.lineTo(this.x + 5, this.y + 20);
         ctx.stroke();
-        // Label
+        // Role Label
         ctx.fillStyle = this.color;
         ctx.font = "10px Arial";
-        ctx.fillText("Bryce", this.x - 10, this.y - 15);
+        ctx.fillText(this.role, this.x - 15, this.y - 20);
       }
     }
 
-    // House class
-    class House {
+    // ------------------------------------------------------------
+    // Building Class - Represents houses and structures.
+    // ------------------------------------------------------------
+    class Building {
       constructor(x, y) {
-        this.x = x || Math.random() * canvas.width;
-        this.y = y || Math.random() * canvas.height;
+        this.x = x;
+        this.y = y;
         this.width = 40;
         this.height = 40;
+        this.underConstruction = true;
+        this.constructionProgress = 0; // 0 to 100
         this.state = "intact"; // intact, thrown, blown
         this.vx = 0;
         this.vy = 0;
       }
-      update() {
+      update(delta) {
         if (this.state === "thrown") {
-          this.x += this.vx;
-          this.y += this.vy;
-          this.vx *= 0.98;
-          this.vy *= 0.98;
+          this.x += this.vx * delta;
+          this.y += this.vy * delta;
+          this.vx *= 0.99;
+          this.vy *= 0.99;
         }
       }
       draw() {
         if (this.state === "blown") return;
-        ctx.fillStyle = "brown";
+        ctx.fillStyle = "#8B4513";
         ctx.fillRect(this.x, this.y, this.width, this.height);
-        ctx.strokeStyle = "black";
+        ctx.strokeStyle = "#000";
         ctx.strokeRect(this.x, this.y, this.width, this.height);
-        // Draw a door
-        ctx.fillStyle = "black";
+        // Door
+        ctx.fillStyle = "#000";
         ctx.fillRect(this.x + this.width/2 - 5, this.y + this.height - 15, 10, 15);
+        // If under construction, show progress bar
+        if (this.underConstruction) {
+          ctx.fillStyle = "gray";
+          ctx.fillRect(this.x, this.y - 10, this.width, 5);
+          ctx.fillStyle = "green";
+          ctx.fillRect(this.x, this.y - 10, (this.constructionProgress/100) * this.width, 5);
+        }
       }
-      throwHouse(forceX, forceY) {
+      throwBuilding(forceX, forceY) {
         this.state = "thrown";
         this.vx = forceX;
         this.vy = forceY;
       }
       blowUp() {
         this.state = "blown";
-        // (Optional: add explosion effects here)
       }
     }
 
-    // Initialize community: spawn some Bryces and houses
-    for (let i = 0; i < 10; i++) {
-      communityBryces.push(new CommunityBryce());
-    }
-    for (let i = 0; i < 5; i++) {
-      houses.push(new House());
-    }
+    // ------------------------------------------------------------
+    // Instantiate World Object
+    // ------------------------------------------------------------
+    const world = new World();
 
-    // --- Control Button Handlers ---
-    document.getElementById('pauseBtn').addEventListener('click', () => {
-      isPaused = !isPaused;
-    });
-    document.getElementById('rewindBtn').addEventListener('click', () => {
-      timeMultiplier = -1;
-      document.getElementById('timeMultiplierDisplay').innerText = timeMultiplier;
-    });
-    document.getElementById('fastForwardBtn').addEventListener('click', () => {
-      timeMultiplier = 2;
-      document.getElementById('timeMultiplierDisplay').innerText = timeMultiplier;
-    });
-    document.getElementById('speedUpBtn').addEventListener('click', () => {
-      timeMultiplier += 0.5;
-      document.getElementById('timeMultiplierDisplay').innerText = timeMultiplier;
-    });
-    document.getElementById('slowDownBtn').addEventListener('click', () => {
-      timeMultiplier = Math.max(0.1, timeMultiplier - 0.5);
-      document.getElementById('timeMultiplierDisplay').innerText = timeMultiplier;
-    });
-    document.getElementById('weatherSelect').addEventListener('change', (e) => {
-      weather = e.target.value;
-      if (weather === "sunny") canvas.style.background = "#87CEEB";
-      else if (weather === "rain") canvas.style.background = "#555";
-      else if (weather === "cloudy") canvas.style.background = "#888";
-      else if (weather === "dry") canvas.style.background = "#C2B280";
-    });
-    document.getElementById('changeRolesBtn').addEventListener('click', () => {
-      // Randomly assign roles to each Bryce
-      const roles = ["Regular", "Killer", "Fugitive", "Police"];
-      communityBryces.forEach(b => {
-        b.role = roles[Math.floor(Math.random() * roles.length)];
-        b.job = b.role;
-        b.updateColor();
-      });
-    });
-    document.getElementById('buildHouseBtn').addEventListener('click', () => {
-      houses.push(new House());
-    });
-    document.getElementById('throwHouseBtn').addEventListener('click', () => {
-      houses.forEach(h => {
-        if (h.state === "intact") {
-          h.throwHouse((Math.random()-0.5)*10, (Math.random()-0.5)*10);
-        }
-      });
-    });
-    document.getElementById('blowUpHouseBtn').addEventListener('click', () => {
-      houses.forEach(h => {
-        if (h.state === "intact") {
-          h.blowUp();
-        }
-      });
-    });
-
-    // --- Main Animation Loop ---
-    function animate() {
+    // ------------------------------------------------------------
+    // Main Animation Loop & Time Management
+    // ------------------------------------------------------------
+    let lastTime = performance.now();
+    function mainLoop(now) {
+      let delta = (now - lastTime) / 1000;
+      lastTime = now;
       if (!isPaused) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        // Weather effects
-        if (weather === "rain") {
-          for (let i = 0; i < 50; i++) {
-            ctx.strokeStyle = "blue";
-            ctx.beginPath();
-            let rx = Math.random() * canvas.width;
-            let ry = Math.random() * canvas.height;
-            ctx.moveTo(rx, ry);
-            ctx.lineTo(rx, ry + 10);
-            ctx.stroke();
-          }
-        }
-        // Update & draw houses
-        houses.forEach(h => {
-          h.update();
-          h.draw();
-        });
-        // Update & draw community Bryces
-        communityBryces.forEach(b => {
-          b.update();
-          b.draw();
-        });
+        world.update(delta);
       }
-      requestAnimationFrame(animate);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      world.draw();
+      requestAnimationFrame(mainLoop);
     }
-    animate();
+    requestAnimationFrame(mainLoop);
+
+    // ------------------------------------------------------------
+    // UI Controls Event Handlers
+    // ------------------------------------------------------------
+    document.getElementById("pauseBtn").addEventListener("click", () => {
+      isPaused = !isPaused;
+      log(isPaused ? "Simulation paused." : "Simulation resumed.");
+    });
+    document.getElementById("rewindBtn").addEventListener("click", () => {
+      timeMultiplier = -1;
+      document.getElementById("timeMultiplierDisplay").innerText = timeMultiplier;
+      log("Rewind activated.");
+    });
+    document.getElementById("fastForwardBtn").addEventListener("click", () => {
+      timeMultiplier = 2;
+      document.getElementById("timeMultiplierDisplay").innerText = timeMultiplier;
+      log("Fast forward activated.");
+    });
+    document.getElementById("speedUpBtn").addEventListener("click", () => {
+      timeMultiplier += 0.5;
+      document.getElementById("timeMultiplierDisplay").innerText = timeMultiplier;
+      log("Speed increased.");
+    });
+    document.getElementById("slowDownBtn").addEventListener("click", () => {
+      timeMultiplier = Math.max(0.1, timeMultiplier - 0.5);
+      document.getElementById("timeMultiplierDisplay").innerText = timeMultiplier;
+      log("Speed decreased.");
+    });
+    document.getElementById("weatherSelect").addEventListener("change", (e) => {
+      currentWeather = e.target.value;
+      if (currentWeather === "sunny") canvas.style.background = "#87CEEB";
+      else if (currentWeather === "rain") canvas.style.background = "#555";
+      else if (currentWeather === "cloudy") canvas.style.background = "#888";
+      else if (currentWeather === "dry") canvas.style.background = "#C2B280";
+      log("Weather changed to " + currentWeather);
+    });
+    document.getElementById("buildHouseBtn").addEventListener("click", () => {
+      let x = Math.random() * (canvas.width - 50);
+      let y = Math.random() * (canvas.height - 50);
+      let newHouse = new Building(x, y);
+      world.buildings.push(newHouse);
+      log("New house construction started.");
+    });
+    document.getElementById("throwHouseBtn").addEventListener("click", () => {
+      world.buildings.forEach(b => {
+        if (b.state === "intact") {
+          b.throwBuilding((Math.random()-0.5)*100, (Math.random()-0.5)*100);
+        }
+      });
+      log("Houses thrown!");
+    });
+    document.getElementById("blowUpHouseBtn").addEventListener("click", () => {
+      world.buildings.forEach(b => {
+        if (b.state === "intact") {
+          b.blowUp();
+        }
+      });
+      log("Houses blown up!");
+    });
+    document.getElementById("changeRolesBtn").addEventListener("click", () => {
+      world.agents.forEach(a => {
+        // Reassign roles randomly
+        a.role = a.assignRole();
+        a.job = a.role;
+        a.color = a.getColorByRole();
+      });
+      log("Agent roles randomized.");
+    });
+    document.getElementById("spawnAgentBtn").addEventListener("click", () => {
+      let newAgent = new Agent();
+      world.agents.push(newAgent);
+      log("New Bryce Agent spawned.");
+    });
+
+    // ------------------------------------------------------------
+    // Populate initial agents in the world
+    // ------------------------------------------------------------
+    for (let i = 0; i < 20; i++) {
+      world.agents.push(new Agent());
+    }
+    log("World initialized with " + world.agents.length + " agents.");
+
+    /**********************************************************
+     * End of Bryce World Simulator
+     * --------------------------------------------------------
+     * This simulation runs on HTML5 Canvas with full time,
+     * weather, agent roles and building construction.
+     *
+     * Enjoy this insane sandbox world – tweak, expand, and
+     * add even more chaos as you wish!
+     **********************************************************/
   </script>
 </body>
 </html>

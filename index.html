@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Bryce Community Simulator</title>
+  <style>
+    body { 
+      margin: 0; 
+      overflow: hidden; 
+      background: #87CEEB; /* Default sunny */
+    }
+    canvas { 
+      display: block; 
+      background: inherit;
+    }
+    #controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(255,255,255,0.8);
+      padding: 10px;
+      border-radius: 5px;
+      font-family: sans-serif;
+    }
+    button, select { margin: 3px; }
+  </style>
+</head>
+<body>
+  <canvas id="simCanvas"></canvas>
+  <div id="controls">
+    <!-- Time Controls -->
+    <div>
+      <button id="pauseBtn">Pause</button>
+      <button id="rewindBtn">Rewind</button>
+      <button id="fastForwardBtn">Fast Forward</button>
+      <button id="speedUpBtn">Speed Up</button>
+      <button id="slowDownBtn">Slow Down</button>
+      <span>Time Multiplier: <span id="timeMultiplierDisplay">1</span></span>
+    </div>
+    <!-- Weather Control -->
+    <div>
+      Weather: 
+      <select id="weatherSelect">
+        <option value="sunny">Sunny</option>
+        <option value="rain">Rain</option>
+        <option value="cloudy">Cloudy</option>
+        <option value="dry">Dry</option>
+      </select>
+    </div>
+    <!-- Community Controls -->
+    <div>
+      <button id="changeRolesBtn">Change Roles</button>
+      <button id="buildHouseBtn">Build House</button>
+      <button id="throwHouseBtn">Throw House</button>
+      <button id="blowUpHouseBtn">Blow Up House</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // Global simulation variables
+    let timeMultiplier = 1; // Can be negative for "rewind"
+    let weather = "sunny";  // Options: sunny, rain, cloudy, dry
+    let isPaused = false;
+    const communityBryces = [];
+    const houses = [];
+
+    // CommunityBryce class (stick figure Bryce)
+    class CommunityBryce {
+      constructor(x, y) {
+        this.x = x || Math.random() * canvas.width;
+        this.y = y || Math.random() * canvas.height;
+        this.dx = (Math.random() - 0.5) * 2;
+        this.dy = (Math.random() - 0.5) * 2;
+        // Roles: Regular, Killer, Fugitive, Police
+        this.role = "Regular";
+        this.job = this.role;
+        this.color = "black";
+        this.updateColor();
+      }
+      updateColor() {
+        if (this.role === "Regular") this.color = "black";
+        else if (this.role === "Killer") this.color = "red";
+        else if (this.role === "Fugitive") this.color = "orange";
+        else if (this.role === "Police") this.color = "blue";
+      }
+      update() {
+        // Role-based behavior:
+        if (this.role === "Killer") {
+          // Chase nearest Regular or Fugitive
+          let target = null, minDist = Infinity;
+          for (let other of communityBryces) {
+            if (other !== this && (other.role === "Regular" || other.role === "Fugitive")) {
+              let d = Math.hypot(this.x - other.x, this.y - other.y);
+              if (d < minDist) { minDist = d; target = other; }
+            }
+          }
+          if (target) {
+            let angle = Math.atan2(target.y - this.y, target.x - this.x);
+            this.dx = Math.cos(angle) * 1.5;
+            this.dy = Math.sin(angle) * 1.5;
+          }
+        } else if (this.role === "Police") {
+          // Chase nearest Killer
+          let target = null, minDist = Infinity;
+          for (let other of communityBryces) {
+            if (other !== this && other.role === "Killer") {
+              let d = Math.hypot(this.x - other.x, this.y - other.y);
+              if (d < minDist) { minDist = d; target = other; }
+            }
+          }
+          if (target) {
+            let angle = Math.atan2(target.y - this.y, target.x - this.x);
+            this.dx = Math.cos(angle) * 1.2;
+            this.dy = Math.sin(angle) * 1.2;
+          }
+        } else if (this.role === "Fugitive") {
+          // Run away from nearest Killer
+          let threat = null, minDist = Infinity;
+          for (let other of communityBryces) {
+            if (other !== this && other.role === "Killer") {
+              let d = Math.hypot(this.x - other.x, this.y - other.y);
+              if (d < minDist) { minDist = d; threat = other; }
+            }
+          }
+          if (threat) {
+            let angle = Math.atan2(this.y - threat.y, this.x - threat.x);
+            this.dx = Math.cos(angle) * 1.5;
+            this.dy = Math.sin(angle) * 1.5;
+          }
+        }
+        // Update position with time multiplier
+        this.x += this.dx * timeMultiplier;
+        this.y += this.dy * timeMultiplier;
+        // Bounce off walls
+        if (this.x < 0 || this.x > canvas.width) this.dx *= -1;
+        if (this.y < 0 || this.y > canvas.height) this.dy *= -1;
+      }
+      draw() {
+        // Draw a stick figure
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 2;
+        // Head
+        ctx.beginPath();
+        ctx.arc(this.x, this.y - 10, 5, 0, Math.PI * 2);
+        ctx.stroke();
+        // Body
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y - 5);
+        ctx.lineTo(this.x, this.y + 10);
+        ctx.stroke();
+        // Arms
+        ctx.beginPath();
+        ctx.moveTo(this.x - 5, this.y);
+        ctx.lineTo(this.x + 5, this.y);
+        ctx.stroke();
+        // Legs
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y + 10);
+        ctx.lineTo(this.x - 5, this.y + 20);
+        ctx.moveTo(this.x, this.y + 10);
+        ctx.lineTo(this.x + 5, this.y + 20);
+        ctx.stroke();
+        // Label
+        ctx.fillStyle = this.color;
+        ctx.font = "10px Arial";
+        ctx.fillText("Bryce", this.x - 10, this.y - 15);
+      }
+    }
+
+    // House class
+    class House {
+      constructor(x, y) {
+        this.x = x || Math.random() * canvas.width;
+        this.y = y || Math.random() * canvas.height;
+        this.width = 40;
+        this.height = 40;
+        this.state = "intact"; // intact, thrown, blown
+        this.vx = 0;
+        this.vy = 0;
+      }
+      update() {
+        if (this.state === "thrown") {
+          this.x += this.vx;
+          this.y += this.vy;
+          this.vx *= 0.98;
+          this.vy *= 0.98;
+        }
+      }
+      draw() {
+        if (this.state === "blown") return;
+        ctx.fillStyle = "brown";
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+        ctx.strokeStyle = "black";
+        ctx.strokeRect(this.x, this.y, this.width, this.height);
+        // Draw a door
+        ctx.fillStyle = "black";
+        ctx.fillRect(this.x + this.width/2 - 5, this.y + this.height - 15, 10, 15);
+      }
+      throwHouse(forceX, forceY) {
+        this.state = "thrown";
+        this.vx = forceX;
+        this.vy = forceY;
+      }
+      blowUp() {
+        this.state = "blown";
+        // (Optional: add explosion effects here)
+      }
+    }
+
+    // Initialize community: spawn some Bryces and houses
+    for (let i = 0; i < 10; i++) {
+      communityBryces.push(new CommunityBryce());
+    }
+    for (let i = 0; i < 5; i++) {
+      houses.push(new House());
+    }
+
+    // --- Control Button Handlers ---
+    document.getElementById('pauseBtn').addEventListener('click', () => {
+      isPaused = !isPaused;
+    });
+    document.getElementById('rewindBtn').addEventListener('click', () => {
+      timeMultiplier = -1;
+      document.getElementById('timeMultiplierDisplay').innerText = timeMultiplier;
+    });
+    document.getElementById('fastForwardBtn').addEventListener('click', () => {
+      timeMultiplier = 2;
+      document.getElementById('timeMultiplierDisplay').innerText = timeMultiplier;
+    });
+    document.getElementById('speedUpBtn').addEventListener('click', () => {
+      timeMultiplier += 0.5;
+      document.getElementById('timeMultiplierDisplay').innerText = timeMultiplier;
+    });
+    document.getElementById('slowDownBtn').addEventListener('click', () => {
+      timeMultiplier = Math.max(0.1, timeMultiplier - 0.5);
+      document.getElementById('timeMultiplierDisplay').innerText = timeMultiplier;
+    });
+    document.getElementById('weatherSelect').addEventListener('change', (e) => {
+      weather = e.target.value;
+      if (weather === "sunny") canvas.style.background = "#87CEEB";
+      else if (weather === "rain") canvas.style.background = "#555";
+      else if (weather === "cloudy") canvas.style.background = "#888";
+      else if (weather === "dry") canvas.style.background = "#C2B280";
+    });
+    document.getElementById('changeRolesBtn').addEventListener('click', () => {
+      // Randomly assign roles to each Bryce
+      const roles = ["Regular", "Killer", "Fugitive", "Police"];
+      communityBryces.forEach(b => {
+        b.role = roles[Math.floor(Math.random() * roles.length)];
+        b.job = b.role;
+        b.updateColor();
+      });
+    });
+    document.getElementById('buildHouseBtn').addEventListener('click', () => {
+      houses.push(new House());
+    });
+    document.getElementById('throwHouseBtn').addEventListener('click', () => {
+      houses.forEach(h => {
+        if (h.state === "intact") {
+          h.throwHouse((Math.random()-0.5)*10, (Math.random()-0.5)*10);
+        }
+      });
+    });
+    document.getElementById('blowUpHouseBtn').addEventListener('click', () => {
+      houses.forEach(h => {
+        if (h.state === "intact") {
+          h.blowUp();
+        }
+      });
+    });
+
+    // --- Main Animation Loop ---
+    function animate() {
+      if (!isPaused) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Weather effects
+        if (weather === "rain") {
+          for (let i = 0; i < 50; i++) {
+            ctx.strokeStyle = "blue";
+            ctx.beginPath();
+            let rx = Math.random() * canvas.width;
+            let ry = Math.random() * canvas.height;
+            ctx.moveTo(rx, ry);
+            ctx.lineTo(rx, ry + 10);
+            ctx.stroke();
+          }
+        }
+        // Update & draw houses
+        houses.forEach(h => {
+          h.update();
+          h.draw();
+        });
+        // Update & draw community Bryces
+        communityBryces.forEach(b => {
+          b.update();
+          b.draw();
+        });
+      }
+      requestAnimationFrame(animate);
+    }
+    animate();
+  </script>
+</body>
+</html>
